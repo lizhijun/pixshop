@@ -8,11 +8,12 @@ import React, { useState } from 'react';
 interface AdjustmentPanelProps {
   onApplyAdjustment: (prompt: string) => void;
   isLoading: boolean;
+  initialPrompt?: string;
 }
 
-const AdjustmentPanel: React.FC<AdjustmentPanelProps> = ({ onApplyAdjustment, isLoading }) => {
+const AdjustmentPanel: React.FC<AdjustmentPanelProps> = ({ onApplyAdjustment, isLoading, initialPrompt }) => {
   const [selectedPresetPrompt, setSelectedPresetPrompt] = useState<string | null>(null);
-  const [customPrompt, setCustomPrompt] = useState('');
+  const [customPrompt, setCustomPrompt] = useState(initialPrompt || '');
 
   const presets = [
     { name: 'Blur Background', prompt: 'Apply a realistic depth-of-field effect, making the background blurry while keeping the main subject in sharp focus.' },

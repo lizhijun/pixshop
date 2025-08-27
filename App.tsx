@@ -38,6 +38,8 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<File[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [prompt, setPrompt] = useState<string>('');
+  const [initialPrompt, setInitialPrompt] = useState<string>('');
+  const [initialMode, setInitialMode] = useState<Tab>('retouch');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [editHotspot, setEditHotspot] = useState<{ x: number, y: number } | null>(null);
@@ -92,16 +94,37 @@ const App: React.FC = () => {
     setCompletedCrop(undefined);
   }, [history, historyIndex]);
 
+  const handlePromptSelect = useCallback((selectedPrompt: string, mode: 'retouch' | 'filter' | 'adjust') => {
+    setInitialPrompt(selectedPrompt);
+    // Map mode to tab type
+    const tabMapping: Record<'retouch' | 'filter' | 'adjust', Tab> = {
+      'retouch': 'retouch',
+      'filter': 'filters', 
+      'adjust': 'adjust'
+    };
+    setInitialMode(tabMapping[mode]);
+  }, []);
+
   const handleImageUpload = useCallback((file: File) => {
     setError(null);
     setHistory([file]);
     setHistoryIndex(0);
     setEditHotspot(null);
     setDisplayHotspot(null);
-    setActiveTab('retouch');
+    
+    // Apply initial settings from StartScreen if available
+    if (initialPrompt) {
+      setPrompt(initialPrompt);
+      setActiveTab(initialMode);
+      // Clear initial settings after applying
+      setInitialPrompt('');
+    } else {
+      setActiveTab('retouch');
+    }
+    
     setCrop(undefined);
     setCompletedCrop(undefined);
-  }, []);
+  }, [initialPrompt, initialMode]);
 
   const handleGenerate = useCallback(async () => {
     if (!currentImage) {
@@ -315,7 +338,7 @@ const App: React.FC = () => {
     }
     
     if (!currentImageUrl) {
-      return <StartScreen onFileSelect={handleFileSelect} />;
+      return <StartScreen onFileSelect={handleFileSelect} onPromptSelect={handlePromptSelect} />;
     }
 
     const imageDisplay = (
@@ -427,8 +450,8 @@ const App: React.FC = () => {
                 </div>
             )}
             {activeTab === 'crop' && <CropPanel onApplyCrop={handleApplyCrop} onSetAspect={setAspect} isLoading={isLoading} isCropping={!!completedCrop?.width && completedCrop.width > 0} />}
-            {activeTab === 'adjust' && <AdjustmentPanel onApplyAdjustment={handleApplyAdjustment} isLoading={isLoading} />}
-            {activeTab === 'filters' && <FilterPanel onApplyFilter={handleApplyFilter} isLoading={isLoading} />}
+            {activeTab === 'adjust' && <AdjustmentPanel onApplyAdjustment={handleApplyAdjustment} isLoading={isLoading} initialPrompt={activeTab === 'adjust' ? prompt : undefined} />}
+            {activeTab === 'filters' && <FilterPanel onApplyFilter={handleApplyFilter} isLoading={isLoading} initialPrompt={activeTab === 'filters' ? prompt : undefined} />}
         </div>
         
         <div className="flex flex-wrap items-center justify-center gap-3 mt-6">

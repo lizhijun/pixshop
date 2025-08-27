@@ -8,11 +8,12 @@ import React, { useState } from 'react';
 interface FilterPanelProps {
   onApplyFilter: (prompt: string) => void;
   isLoading: boolean;
+  initialPrompt?: string;
 }
 
-const FilterPanel: React.FC<FilterPanelProps> = ({ onApplyFilter, isLoading }) => {
+const FilterPanel: React.FC<FilterPanelProps> = ({ onApplyFilter, isLoading, initialPrompt }) => {
   const [selectedPresetPrompt, setSelectedPresetPrompt] = useState<string | null>(null);
-  const [customPrompt, setCustomPrompt] = useState('');
+  const [customPrompt, setCustomPrompt] = useState(initialPrompt || '');
 
   const presets = [
     { name: 'Synthwave', prompt: 'Apply a vibrant 80s synthwave aesthetic with neon magenta and cyan glows, and subtle scan lines.' },
