@@ -353,3 +353,90 @@ Output: Return ONLY the final adjusted image. Do not return text.`;
 
     return await generateImageWithFallback(prompt, imageDataUrl, 'adjustment');
 };
+
+/**
+ * Generates an image based on text prompt and multiple reference images for chat mode.
+ * @param userPrompt The text prompt describing the desired image.
+ * @param referenceImages Array of reference image files.
+ * @returns A promise that resolves to the data URL of the generated image.
+ */
+export const generateChatImage = async (
+    userPrompt: string,
+    referenceImages: File[]
+): Promise<string> => {
+    console.log(`Starting chat image generation with ${referenceImages.length} reference images`);
+    
+    // Convert all reference images to data URLs
+    const imageDataUrls = await Promise.all(
+        referenceImages.map(file => fileToDataUrl(file))
+    );
+    
+    const prompt = `You are an expert AI image generator. Create a new image based on the user's request and the provided reference images.
+
+User Request: "${userPrompt}"
+
+Guidelines:
+- Use the reference images to understand the style, composition, or elements the user wants
+- Create a cohesive, high-quality image that fulfills the user's request
+- The result should be creative and well-composed
+- If no reference images are provided, create based purely on the text prompt
+
+Safety & Ethics Policy:
+- Create appropriate, safe-for-work content only
+- Avoid generating harmful, offensive, or inappropriate imagery
+- Respect privacy and do not replicate identifiable people without consent
+
+Output: Return ONLY the final generated image. Do not return text.`;
+
+    // Try Replicate first (primary) with multi-image support
+    try {
+        console.log(`Attempting chat generation with Replicate...`);
+        
+        // For Replicate, we'll use the first image as primary and include others in prompt if multiple
+        const primaryImageUrl = imageDataUrls[0];
+        let enhancedPrompt = prompt;
+        
+        if (imageDataUrls.length > 1) {
+            enhancedPrompt += `\n\nNote: User has provided ${imageDataUrls.length} reference images. Please consider all of them for context and style reference.`;
+        }
+        
+        return await callReplicate(enhancedPrompt, primaryImageUrl || 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==');
+    } catch (replicateError) {
+        console.warn(`Replicate failed for chat generation:`, replicateError);
+        
+        // Fallback to OpenRouter with multi-image support
+        try {
+            console.log(`Falling back to OpenRouter for chat generation...`);
+            
+            const content: any[] = [
+                {
+                    type: 'text',
+                    text: prompt
+                }
+            ];
+            
+            // Add all reference images to the content
+            imageDataUrls.forEach((imageUrl, index) => {
+                content.push({
+                    type: 'image_url',
+                    image_url: {
+                        url: imageUrl
+                    }
+                });
+            });
+            
+            const messages = [
+                {
+                    role: 'user',
+                    content
+                }
+            ];
+
+            const response = await callOpenRouter(messages);
+            return handleOpenRouterResponse(response, 'chat');
+        } catch (openRouterError) {
+            console.error(`Both providers failed for chat generation:`, { replicateError, openRouterError });
+            throw new Error(`Chat image generation failed. Replicate: ${replicateError instanceof Error ? replicateError.message : 'Unknown error'}. OpenRouter: ${openRouterError instanceof Error ? openRouterError.message : 'Unknown error'}`);
+        }
+    }
+};

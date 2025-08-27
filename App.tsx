@@ -6,7 +6,7 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import ReactCrop, { type Crop, type PixelCrop } from 'react-image-crop';
-import { generateEditedImage, generateFilteredImage, generateAdjustedImage } from './services/geminiService';
+import { generateEditedImage, generateFilteredImage, generateAdjustedImage, generateChatImage } from './services/geminiService';
 import Header from './components/Header';
 import Spinner from './components/Spinner';
 import FilterPanel from './components/FilterPanel';
@@ -14,6 +14,7 @@ import AdjustmentPanel from './components/AdjustmentPanel';
 import CropPanel from './components/CropPanel';
 import { UndoIcon, RedoIcon, EyeIcon } from './components/icons';
 import StartScreen from './components/StartScreen';
+import ChatMode from './components/ChatMode';
 
 // Helper to convert a data URL string to a File object
 const dataURLtoFile = (dataurl: string, filename: string): File => {
@@ -32,7 +33,7 @@ const dataURLtoFile = (dataurl: string, filename: string): File => {
     return new File([u8arr], filename, {type:mime});
 }
 
-type Tab = 'retouch' | 'adjust' | 'filters' | 'crop';
+type Tab = 'retouch' | 'adjust' | 'filters' | 'crop' | 'chat';
 
 const App: React.FC = () => {
   const [history, setHistory] = useState<File[]>([]);
@@ -204,6 +205,20 @@ const App: React.FC = () => {
     }
   }, [currentImage, addImageToHistory]);
 
+  const handleChatGenerate = useCallback(async (prompt: string, referenceImages: File[]): Promise<string> => {
+    setError(null);
+    
+    try {
+        const resultImageUrl = await generateChatImage(prompt, referenceImages);
+        return resultImageUrl;
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+        setError(`Failed to generate image. ${errorMessage}`);
+        console.error(err);
+        throw err;
+    }
+  }, []);
+
   const handleApplyCrop = useCallback(() => {
     if (!completedCrop || !imgRef.current) {
         setError('Please select an area to crop.');
@@ -337,7 +352,8 @@ const App: React.FC = () => {
         );
     }
     
-    if (!currentImageUrl) {
+    // Show StartScreen only if no image is loaded AND not in chat mode
+    if (!currentImageUrl && activeTab !== 'chat') {
       return <StartScreen onFileSelect={handleFileSelect} onPromptSelect={handlePromptSelect} />;
     }
 
@@ -376,40 +392,69 @@ const App: React.FC = () => {
     );
 
 
+    // Chat mode has a different layout
+    if (activeTab === 'chat') {
+      return (
+        <div className="w-full max-w-6xl mx-auto flex flex-col items-center gap-6 animate-fade-in">
+          {/* Tab Navigation */}
+          <div className="w-full bg-gray-800/80 border border-gray-700/80 rounded-lg p-2 flex items-center justify-center gap-2 backdrop-blur-sm max-w-4xl">
+              {(['retouch', 'crop', 'adjust', 'filters', 'chat'] as Tab[]).map(tab => (
+                   <button
+                      key={tab}
+                      onClick={() => setActiveTab(tab)}
+                      className={`w-full capitalize font-semibold py-3 px-5 rounded-md transition-all duration-200 text-base ${
+                          activeTab === tab 
+                          ? 'bg-gradient-to-br from-blue-500 to-cyan-400 text-white shadow-lg shadow-cyan-500/40' 
+                          : 'text-gray-300 hover:text-white hover:bg-white/10'
+                      }`}
+                  >
+                      {tab === 'chat' ? '对话' : tab}
+                  </button>
+              ))}
+          </div>
+          
+          {/* Chat Mode Content */}
+          <ChatMode onGenerateImage={handleChatGenerate} isLoading={isLoading} />
+        </div>
+      );
+    }
+
     return (
       <div className="w-full max-w-4xl mx-auto flex flex-col items-center gap-6 animate-fade-in">
-        <div className="relative w-full shadow-2xl rounded-xl overflow-hidden bg-black/20">
-            {isLoading && (
-                <div className="absolute inset-0 bg-black/70 z-30 flex flex-col items-center justify-center gap-4 animate-fade-in">
-                    <Spinner />
-                    <p className="text-gray-300">AI is working its magic...</p>
-                </div>
-            )}
-            
-            {activeTab === 'crop' ? (
-              <ReactCrop 
-                crop={crop} 
-                onChange={c => setCrop(c)} 
-                onComplete={c => setCompletedCrop(c)}
-                aspect={aspect}
-                className="max-h-[60vh]"
-              >
-                {cropImageElement}
-              </ReactCrop>
-            ) : imageDisplay }
-
-            {displayHotspot && !isLoading && activeTab === 'retouch' && (
-                <div 
-                    className="absolute rounded-full w-6 h-6 bg-blue-500/50 border-2 border-white pointer-events-none -translate-x-1/2 -translate-y-1/2 z-10"
-                    style={{ left: `${displayHotspot.x}px`, top: `${displayHotspot.y}px` }}
+        {currentImageUrl && (
+          <div className="relative w-full shadow-2xl rounded-xl overflow-hidden bg-black/20">
+              {isLoading && (
+                  <div className="absolute inset-0 bg-black/70 z-30 flex flex-col items-center justify-center gap-4 animate-fade-in">
+                      <Spinner />
+                      <p className="text-gray-300">AI is working its magic...</p>
+                  </div>
+              )}
+              
+              {activeTab === 'crop' ? (
+                <ReactCrop 
+                  crop={crop} 
+                  onChange={c => setCrop(c)} 
+                  onComplete={c => setCompletedCrop(c)}
+                  aspect={aspect}
+                  className="max-h-[60vh]"
                 >
-                    <div className="absolute inset-0 rounded-full w-6 h-6 animate-ping bg-blue-400"></div>
-                </div>
-            )}
-        </div>
+                  {cropImageElement}
+                </ReactCrop>
+              ) : imageDisplay }
+
+              {displayHotspot && !isLoading && activeTab === 'retouch' && (
+                  <div 
+                      className="absolute rounded-full w-6 h-6 bg-blue-500/50 border-2 border-white pointer-events-none -translate-x-1/2 -translate-y-1/2 z-10"
+                      style={{ left: `${displayHotspot.x}px`, top: `${displayHotspot.y}px` }}
+                  >
+                      <div className="absolute inset-0 rounded-full w-6 h-6 animate-ping bg-blue-400"></div>
+                  </div>
+              )}
+          </div>
+        )}
         
         <div className="w-full bg-gray-800/80 border border-gray-700/80 rounded-lg p-2 flex items-center justify-center gap-2 backdrop-blur-sm">
-            {(['retouch', 'crop', 'adjust', 'filters'] as Tab[]).map(tab => (
+            {(['retouch', 'crop', 'adjust', 'filters', 'chat'] as Tab[]).map(tab => (
                  <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -419,7 +464,7 @@ const App: React.FC = () => {
                         : 'text-gray-300 hover:text-white hover:bg-white/10'
                     }`}
                 >
-                    {tab}
+                    {tab === 'chat' ? '对话' : tab}
                 </button>
             ))}
         </div>
