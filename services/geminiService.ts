@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-// OpenRouter API integration for Gemini model
+// Multi-provider AI image generation service (OpenRouter + Replicate)
 
 // Helper function to convert a File object to data URL for OpenRouter
 const fileToDataUrl = async (file: File): Promise<string> => {
@@ -13,6 +13,27 @@ const fileToDataUrl = async (file: File): Promise<string> => {
         reader.onload = () => resolve(reader.result as string);
         reader.onerror = error => reject(error);
     });
+};
+
+// Helper function to convert image URL to data URL
+const convertUrlToDataUrl = async (url: string): Promise<string> => {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+        }
+        
+        const blob = await response.blob();
+        return new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(blob);
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = error => reject(error);
+        });
+    } catch (error) {
+        console.error('Error converting URL to data URL:', error);
+        throw new Error(`Failed to convert image URL to data URL: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
 };
 
 interface OpenRouterResponse {
@@ -90,6 +111,163 @@ const callOpenRouter = async (messages: any[]): Promise<OpenRouterResponse> => {
     return response.json();
 };
 
+// Replicate API integration using direct HTTP calls to avoid CORS
+const callReplicate = async (prompt: string, imageUrl: string): Promise<string> => {
+    const apiKey = process.env.REPLICATE_API_TOKEN;
+    if (!apiKey) {
+        throw new Error('REPLICATE_API_TOKEN environment variable is required');
+    }
+
+    try {
+        // Create prediction
+        const predictionResponse = await fetch('/api/replicate/v1/models/google/nano-banana/predictions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'wait'
+            },
+            body: JSON.stringify({
+                input: {
+                    prompt: prompt,
+                    image_input: [imageUrl],
+                    output_format: "jpg"
+                }
+            })
+        });
+
+        if (!predictionResponse.ok) {
+            const errorText = await predictionResponse.text();
+            throw new Error(`Replicate API request failed: ${predictionResponse.status} ${predictionResponse.statusText} - ${errorText}`);
+        }
+
+        const prediction = await predictionResponse.json();
+        
+        if (prediction.error) {
+            throw new Error(`Replicate model error: ${prediction.error}`);
+        }
+
+        // If we get output immediately (with Prefer: wait header) and it's completed
+        if (prediction.status === 'succeeded' && prediction.output) {
+            // Output can be a string URL directly or an array
+            let imageUrl: string;
+            if (typeof prediction.output === 'string') {
+                imageUrl = prediction.output;
+            } else if (Array.isArray(prediction.output) && prediction.output[0]) {
+                imageUrl = prediction.output[0];
+            } else {
+                throw new Error('No valid output URL found in completed prediction');
+            }
+            
+            // Convert image URL to data URL
+            return await convertUrlToDataUrl(imageUrl);
+        }
+
+        // If status is processing or starting, poll for completion
+        if (prediction.status === 'processing' || prediction.status === 'starting') {
+            if (!prediction.urls || !prediction.urls.get) {
+                throw new Error('No polling URL provided by Replicate');
+            }
+
+            let attempts = 0;
+            const maxAttempts = 60; // 60 seconds max for processing
+            
+            while (attempts < maxAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+                
+                const statusResponse = await fetch(`/api/replicate${prediction.urls.get.replace('https://api.replicate.com', '')}`, {
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                });
+                
+                if (!statusResponse.ok) {
+                    throw new Error(`Failed to check prediction status: ${statusResponse.status}`);
+                }
+                
+                const status = await statusResponse.json();
+                console.log(`Replicate status check ${attempts + 1}: ${status.status}`);
+                
+                if (status.status === 'succeeded' && status.output) {
+                    // Output can be a string URL directly or an array
+                    let imageUrl: string;
+                    if (typeof status.output === 'string') {
+                        imageUrl = status.output;
+                    } else if (Array.isArray(status.output) && status.output[0]) {
+                        imageUrl = status.output[0];
+                    } else {
+                        throw new Error('No valid output URL found in completed prediction');
+                    }
+                    
+                    // Convert image URL to data URL
+                    return await convertUrlToDataUrl(imageUrl);
+                }
+                
+                if (status.status === 'failed') {
+                    throw new Error(`Replicate prediction failed: ${status.error || 'Unknown error'}`);
+                }
+                
+                if (status.status === 'canceled') {
+                    throw new Error('Replicate prediction was canceled');
+                }
+                
+                attempts++;
+            }
+            
+            throw new Error('Replicate prediction timed out after 60 seconds');
+        }
+
+        // Handle other statuses
+        if (prediction.status === 'failed') {
+            throw new Error(`Replicate prediction failed: ${prediction.error || 'Unknown error'}`);
+        }
+
+        throw new Error('Unexpected response format from Replicate API');
+    } catch (error) {
+        console.error('Replicate API error:', error);
+        throw new Error(`Replicate API failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+};
+
+// Multi-provider image generation with fallback
+const generateImageWithFallback = async (prompt: string, imageUrl: string, context: string): Promise<string> => {
+    // Try Replicate first (primary)
+    try {
+        console.log(`Attempting ${context} with Replicate...`);
+        return await callReplicate(prompt, imageUrl);
+    } catch (replicateError) {
+        console.warn(`Replicate failed for ${context}:`, replicateError);
+        
+        // Fallback to OpenRouter
+        try {
+            console.log(`Falling back to OpenRouter for ${context}...`);
+            const messages = [
+                {
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'text',
+                            text: prompt
+                        },
+                        {
+                            type: 'image_url',
+                            image_url: {
+                                url: imageUrl
+                            }
+                        }
+                    ]
+                }
+            ];
+
+            const response = await callOpenRouter(messages);
+            return handleOpenRouterResponse(response, context);
+        } catch (openRouterError) {
+            console.error(`Both providers failed for ${context}:`, { replicateError, openRouterError });
+            throw new Error(`All image generation providers failed. Replicate: ${replicateError instanceof Error ? replicateError.message : 'Unknown error'}. OpenRouter: ${openRouterError instanceof Error ? openRouterError.message : 'Unknown error'}`);
+        }
+    }
+};
+
 /**
  * Generates an edited image using generative AI based on a text prompt and a specific point.
  * @param originalImage The original image file.
@@ -119,29 +297,7 @@ Safety & Ethics Policy:
 
 Output: Return ONLY the final edited image. Do not return text.`;
 
-    console.log('Sending image and prompt to OpenRouter...');
-    const messages = [
-        {
-            role: 'user',
-            content: [
-                {
-                    type: 'text',
-                    text: prompt
-                },
-                {
-                    type: 'image_url',
-                    image_url: {
-                        url: imageDataUrl
-                    }
-                }
-            ]
-        }
-    ];
-
-    const response = await callOpenRouter(messages);
-    console.log('Received response from OpenRouter for edit.');
-
-    return handleOpenRouterResponse(response, 'edit');
+    return await generateImageWithFallback(prompt, imageDataUrl, 'edit');
 };
 
 /**
@@ -166,29 +322,7 @@ Safety & Ethics Policy:
 
 Output: Return ONLY the final filtered image. Do not return text.`;
 
-    console.log('Sending image and filter prompt to OpenRouter...');
-    const messages = [
-        {
-            role: 'user',
-            content: [
-                {
-                    type: 'text',
-                    text: prompt
-                },
-                {
-                    type: 'image_url',
-                    image_url: {
-                        url: imageDataUrl
-                    }
-                }
-            ]
-        }
-    ];
-
-    const response = await callOpenRouter(messages);
-    console.log('Received response from OpenRouter for filter.');
-    
-    return handleOpenRouterResponse(response, 'filter');
+    return await generateImageWithFallback(prompt, imageDataUrl, 'filter');
 };
 
 /**
@@ -217,27 +351,5 @@ Safety & Ethics Policy:
 
 Output: Return ONLY the final adjusted image. Do not return text.`;
 
-    console.log('Sending image and adjustment prompt to OpenRouter...');
-    const messages = [
-        {
-            role: 'user',
-            content: [
-                {
-                    type: 'text',
-                    text: prompt
-                },
-                {
-                    type: 'image_url',
-                    image_url: {
-                        url: imageDataUrl
-                    }
-                }
-            ]
-        }
-    ];
-
-    const response = await callOpenRouter(messages);
-    console.log('Received response from OpenRouter for adjustment.');
-    
-    return handleOpenRouterResponse(response, 'adjustment');
+    return await generateImageWithFallback(prompt, imageDataUrl, 'adjustment');
 };
