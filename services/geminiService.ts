@@ -3,64 +3,91 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+// OpenRouter API integration for Gemini model
 
-// Helper function to convert a File object to a Gemini API Part
-const fileToPart = async (file: File): Promise<{ inlineData: { mimeType: string; data: string; } }> => {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
+// Helper function to convert a File object to data URL for OpenRouter
+const fileToDataUrl = async (file: File): Promise<string> => {
+    return new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.readAsDataURL(file);
         reader.onload = () => resolve(reader.result as string);
         reader.onerror = error => reject(error);
     });
-    
-    const arr = dataUrl.split(',');
-    if (arr.length < 2) throw new Error("Invalid data URL");
-    const mimeMatch = arr[0].match(/:(.*?);/);
-    if (!mimeMatch || !mimeMatch[1]) throw new Error("Could not parse MIME type from data URL");
-    
-    const mimeType = mimeMatch[1];
-    const data = arr[1];
-    return { inlineData: { mimeType, data } };
 };
 
-const handleApiResponse = (
-    response: GenerateContentResponse,
-    context: string // e.g., "edit", "filter", "adjustment"
+interface OpenRouterResponse {
+    choices: Array<{
+        message: {
+            content: string;
+        };
+        finish_reason: string;
+    }>;
+    error?: {
+        message: string;
+    };
+}
+
+const handleOpenRouterResponse = (
+    response: OpenRouterResponse,
+    context: string
 ): string => {
-    // 1. Check for prompt blocking first
-    if (response.promptFeedback?.blockReason) {
-        const { blockReason, blockReasonMessage } = response.promptFeedback;
-        const errorMessage = `Request was blocked. Reason: ${blockReason}. ${blockReasonMessage || ''}`;
+    if (response.error) {
+        const errorMessage = `OpenRouter API error for ${context}: ${response.error.message}`;
         console.error(errorMessage, { response });
         throw new Error(errorMessage);
     }
 
-    // 2. Try to find the image part
-    const imagePartFromResponse = response.candidates?.[0]?.content?.parts?.find(part => part.inlineData);
-
-    if (imagePartFromResponse?.inlineData) {
-        const { mimeType, data } = imagePartFromResponse.inlineData;
-        console.log(`Received image data (${mimeType}) for ${context}`);
-        return `data:${mimeType};base64,${data}`;
-    }
-
-    // 3. If no image, check for other reasons
-    const finishReason = response.candidates?.[0]?.finishReason;
-    if (finishReason && finishReason !== 'STOP') {
-        const errorMessage = `Image generation for ${context} stopped unexpectedly. Reason: ${finishReason}. This often relates to safety settings.`;
+    const choice = response.choices?.[0];
+    if (!choice) {
+        const errorMessage = `No response choices returned for ${context}`;
         console.error(errorMessage, { response });
         throw new Error(errorMessage);
     }
-    
-    const textFeedback = response.text?.trim();
-    const errorMessage = `The AI model did not return an image for the ${context}. ` + 
-        (textFeedback 
-            ? `The model responded with text: "${textFeedback}"`
-            : "This can happen due to safety filters or if the request is too complex. Please try rephrasing your prompt to be more direct.");
 
-    console.error(`Model response did not contain an image part for ${context}.`, { response });
-    throw new Error(errorMessage);
+    const content = choice.message?.content;
+    if (!content) {
+        const errorMessage = `No content in response for ${context}`;
+        console.error(errorMessage, { response });
+        throw new Error(errorMessage);
+    }
+
+    // For image generation, the content should be a data URL
+    if (!content.startsWith('data:image/')) {
+        const errorMessage = `Response for ${context} does not contain valid image data. Content: ${content.substring(0, 100)}...`;
+        console.error(errorMessage, { response });
+        throw new Error(errorMessage);
+    }
+
+    console.log(`Received image data for ${context}`);
+    return content;
+};
+
+const callOpenRouter = async (messages: any[]): Promise<OpenRouterResponse> => {
+    const apiKey = process.env.OPENROUTER_API_KEY || process.env.API_KEY;
+    if (!apiKey) {
+        throw new Error('OPENROUTER_API_KEY or API_KEY environment variable is required');
+    }
+
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': 'https://pixshop.app',
+            'X-Title': 'Pixshop - AI Photo Editor',
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            model: 'google/gemini-2.5-flash-image-preview:free',
+            messages
+        })
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`OpenRouter API request failed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
 };
 
 /**
@@ -76,9 +103,8 @@ export const generateEditedImage = async (
     hotspot: { x: number, y: number }
 ): Promise<string> => {
     console.log('Starting generative edit at:', hotspot);
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     
-    const originalImagePart = await fileToPart(originalImage);
+    const imageDataUrl = await fileToDataUrl(originalImage);
     const prompt = `You are an expert photo editor AI. Your task is to perform a natural, localized edit on the provided image based on the user's request.
 User Request: "${userPrompt}"
 Edit Location: Focus on the area around pixel coordinates (x: ${hotspot.x}, y: ${hotspot.y}).
@@ -92,16 +118,30 @@ Safety & Ethics Policy:
 - You MUST REFUSE any request to change a person's fundamental race or ethnicity (e.g., 'make me look Asian', 'change this person to be Black'). Do not perform these edits. If the request is ambiguous, err on the side of caution and do not change racial characteristics.
 
 Output: Return ONLY the final edited image. Do not return text.`;
-    const textPart = { text: prompt };
 
-    console.log('Sending image and prompt to the model...');
-    const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image-preview',
-        contents: { parts: [originalImagePart, textPart] },
-    });
-    console.log('Received response from model.', response);
+    console.log('Sending image and prompt to OpenRouter...');
+    const messages = [
+        {
+            role: 'user',
+            content: [
+                {
+                    type: 'text',
+                    text: prompt
+                },
+                {
+                    type: 'image_url',
+                    image_url: {
+                        url: imageDataUrl
+                    }
+                }
+            ]
+        }
+    ];
 
-    return handleApiResponse(response, 'edit');
+    const response = await callOpenRouter(messages);
+    console.log('Received response from OpenRouter for edit.');
+
+    return handleOpenRouterResponse(response, 'edit');
 };
 
 /**
@@ -115,9 +155,8 @@ export const generateFilteredImage = async (
     filterPrompt: string,
 ): Promise<string> => {
     console.log(`Starting filter generation: ${filterPrompt}`);
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     
-    const originalImagePart = await fileToPart(originalImage);
+    const imageDataUrl = await fileToDataUrl(originalImage);
     const prompt = `You are an expert photo editor AI. Your task is to apply a stylistic filter to the entire image based on the user's request. Do not change the composition or content, only apply the style.
 Filter Request: "${filterPrompt}"
 
@@ -126,16 +165,30 @@ Safety & Ethics Policy:
 - You MUST REFUSE any request that explicitly asks to change a person's race (e.g., 'apply a filter to make me look Chinese').
 
 Output: Return ONLY the final filtered image. Do not return text.`;
-    const textPart = { text: prompt };
 
-    console.log('Sending image and filter prompt to the model...');
-    const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image-preview',
-        contents: { parts: [originalImagePart, textPart] },
-    });
-    console.log('Received response from model for filter.', response);
+    console.log('Sending image and filter prompt to OpenRouter...');
+    const messages = [
+        {
+            role: 'user',
+            content: [
+                {
+                    type: 'text',
+                    text: prompt
+                },
+                {
+                    type: 'image_url',
+                    image_url: {
+                        url: imageDataUrl
+                    }
+                }
+            ]
+        }
+    ];
+
+    const response = await callOpenRouter(messages);
+    console.log('Received response from OpenRouter for filter.');
     
-    return handleApiResponse(response, 'filter');
+    return handleOpenRouterResponse(response, 'filter');
 };
 
 /**
@@ -149,9 +202,8 @@ export const generateAdjustedImage = async (
     adjustmentPrompt: string,
 ): Promise<string> => {
     console.log(`Starting global adjustment generation: ${adjustmentPrompt}`);
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     
-    const originalImagePart = await fileToPart(originalImage);
+    const imageDataUrl = await fileToDataUrl(originalImage);
     const prompt = `You are an expert photo editor AI. Your task is to perform a natural, global adjustment to the entire image based on the user's request.
 User Request: "${adjustmentPrompt}"
 
@@ -164,14 +216,28 @@ Safety & Ethics Policy:
 - You MUST REFUSE any request to change a person's fundamental race or ethnicity (e.g., 'make me look Asian', 'change this person to be Black'). Do not perform these edits. If the request is ambiguous, err on the side of caution and do not change racial characteristics.
 
 Output: Return ONLY the final adjusted image. Do not return text.`;
-    const textPart = { text: prompt };
 
-    console.log('Sending image and adjustment prompt to the model...');
-    const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image-preview',
-        contents: { parts: [originalImagePart, textPart] },
-    });
-    console.log('Received response from model for adjustment.', response);
+    console.log('Sending image and adjustment prompt to OpenRouter...');
+    const messages = [
+        {
+            role: 'user',
+            content: [
+                {
+                    type: 'text',
+                    text: prompt
+                },
+                {
+                    type: 'image_url',
+                    image_url: {
+                        url: imageDataUrl
+                    }
+                }
+            ]
+        }
+    ];
+
+    const response = await callOpenRouter(messages);
+    console.log('Received response from OpenRouter for adjustment.');
     
-    return handleApiResponse(response, 'adjustment');
+    return handleOpenRouterResponse(response, 'adjustment');
 };

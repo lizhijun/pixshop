@@ -11,23 +11,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Environment Setup
 
-Set `GEMINI_API_KEY` in `.env.local` for AI image generation functionality.
+Set `OPENROUTER_API_KEY` in `.env.local` for AI image generation functionality via OpenRouter proxy. Alternatively, `GEMINI_API_KEY` can still be used for backwards compatibility.
 
 ## Architecture Overview
 
-**Pixshop** is a React + TypeScript AI-powered photo editor built with Vite. The app uses Google's Gemini AI for image generation and editing.
+**Pixshop** is a React + TypeScript AI-powered photo editor built with Vite. The app uses Google's Gemini AI via OpenRouter proxy for image generation and editing.
 
 ### Core Architecture
 
 - **Single-page React app** (`App.tsx`) managing all state and UI
 - **History-based editing** - maintains undo/redo stack of File objects
 - **Four editing modes**: Retouch (localized edits), Crop, Adjust (global), Filters
-- **AI service layer** (`services/geminiService.ts`) handles all Gemini API interactions
+- **AI service layer** (`services/geminiService.ts`) handles all OpenRouter API interactions with Gemini model
 
 ### Key Components Structure
 
 - `App.tsx` - Main application logic with image history management
-- `services/geminiService.ts` - AI image generation service using Google GenAI
+- `services/geminiService.ts` - AI image generation service using OpenRouter API
 - `components/` - UI components for different editing panels and tools
 - `types.ts` - TypeScript type definitions (currently minimal)
 
@@ -36,7 +36,7 @@ Set `GEMINI_API_KEY` in `.env.local` for AI image generation functionality.
 1. User uploads image → added to history array at index 0
 2. User makes edits → new File objects added to history 
 3. Undo/redo navigates through history indices without mutating array
-4. AI operations convert File → base64 → send to Gemini → receive base64 → convert to File
+4. AI operations convert File → base64 → send to OpenRouter/Gemini → receive base64 → convert to File
 
 ### Key Technical Details
 
