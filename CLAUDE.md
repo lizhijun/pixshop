@@ -24,7 +24,7 @@ Set API keys in `.env.local` for AI image generation functionality:
 
 - **Single-page React app** (`App.tsx`) managing all state and UI
 - **History-based editing** - maintains undo/redo stack of File objects
-- **Four editing modes**: Retouch (localized edits), Crop, Adjust (global), Filters
+- **Five editing modes**: Retouch (localized edits), Crop, Adjust (global), Filters, Chat (image generation)
 - **AI service layer** (`services/geminiService.ts`) handles multi-provider AI requests with automatic fallback
 
 ### Key Components Structure
@@ -32,7 +32,11 @@ Set API keys in `.env.local` for AI image generation functionality:
 - `App.tsx` - Main application logic with image history management
 - `services/geminiService.ts` - Multi-provider AI image generation service (Replicate + OpenRouter)
 - `components/` - UI components for different editing panels and tools
-- `types.ts` - TypeScript type definitions (currently minimal)
+  - `StartScreen.tsx` - Initial upload interface with prompt templates
+  - `ChatMode.tsx` - Conversational image generation interface
+  - `*Panel.tsx` files - Tool-specific editing interfaces (Filter, Adjustment, Crop)
+  - `Header.tsx`, `Spinner.tsx`, `icons.tsx` - Shared UI components
+- `types.ts` - TypeScript type definitions for chat functionality
 
 ### Data Flow
 
@@ -40,18 +44,25 @@ Set API keys in `.env.local` for AI image generation functionality:
 2. User makes edits → new File objects added to history 
 3. Undo/redo navigates through history indices without mutating array
 4. AI operations convert File → base64 → try Replicate → fallback to OpenRouter → receive result → convert to File
+5. Chat mode supports multi-image input and conversational generation
 
 ### Key Technical Details
 
 - Uses `react-image-crop` for crop functionality
 - Image state managed via object URLs with proper cleanup
-- Hotspot-based editing for localized AI modifications
+- Hotspot-based editing for localized AI modifications (retouch mode)
 - TypeScript path aliases configured (`@/*` maps to project root)
-- Gemini model: `gemini-2.5-flash-image-preview`
+- Vite proxy configuration for Replicate API to avoid CORS issues
+- Multi-provider architecture with graceful fallback handling
+- Chat interface supports multiple reference images and conversational workflow
 
 ### AI Safety Implementation
 
-The codebase includes specific safety policies in AI prompts to handle sensitive content appropriately, particularly around skin tone adjustments vs. racial/ethnic changes.
+The codebase includes comprehensive safety policies in AI prompts:
+- Skin tone adjustments are allowed as standard photo enhancements
+- Race/ethnicity changes are explicitly prohibited
+- Safe-for-work content enforcement in chat mode
+- Privacy protection against replicating identifiable people
 
 ## File Organization
 
